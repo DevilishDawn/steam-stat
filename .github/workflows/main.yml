@@ -1,0 +1,72 @@
+name: Compile Steam Stats to Static PNG
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # Triggers every 5 minutes
+  workflow_dispatch: # Allows you to manually trigger a sync check via the GitHub UI
+
+jobs:
+  build-and-render:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js Runtime
+      uses: actions/setup-node@v4
+      with:
+        node-with: '20'
+        cache: 'npm'
+
+    - name: Install Dependencies
+      run: npm install
+
+    - name: Install SVG to PNG Converter Utility
+      run: sudo apt-get update && sudo apt-get install -y librsvg2-bin
+
+    - name: Live Update Generation Loop
+      run: |
+        # Run a 5-minute loop to fetch status metrics roughly every 60 seconds
+        for i in {1..5}
+        do
+          echo "Sync cycle $i starting..."
+          
+          # 1. Run a tiny inline node command to invoke the card script directly.
+          # REPLACE 'topson' with your exact public Steam profile name!
+          node -e "
+            const { card } = require('./src/card');
+            card('topson').then(svgCode => {
+              require('fs').writeFileSync('temp_stat.svg', svgCode);
+            }).catch(err => {
+              console.error(err);
+              process.exit(1);
+            });
+          "
+          
+          # 2. Rasterize the generated vector layout to drop the console sandbox
+          rsvg-convert -f png -o steam-stat.png temp_stat.svg
+          rm temp_stat.svg # Clean up the loose temporary file
+
+          # 3. Apply Git identity properties
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 4. Check for state modifications
+          git add steam-stat.png
+          
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "Automated Sync: Live Steam Status"
+            git push origin main
+            echo "Successfully updated and pushed steam-stat.png!"
+          else
+            echo "No change in data metrics, skipping commit."
+          fi
+          
+          # 5. Halt loop for 60 seconds before next interval check
+          if [ $i -lt 5 ]; then
+            sleep 60
+          fi
+        done
